@@ -32,7 +32,7 @@ from pacman_utils.game import Agent
 from pacman_utils import util
 
 from collections import defaultdict
-
+import math
 
 class GameStateFeatures:
     """
@@ -59,10 +59,10 @@ class QLearnAgent(Agent):
 
     def __init__(self,
                  alpha: float = 0.2,
-                 epsilon: float = 0.0,
+                 epsilon: float = 0.05,
                  gamma: float = 0.8,
-                 maxAttempts: int = 0,
-                 numTraining: int = 50):
+                 maxAttempts: int = 5,
+                 numTraining: int = 10):
         """
         These values are either passed from the command line (using -a alpha=0.5,...)
         or are set to the default values above.
@@ -86,7 +86,11 @@ class QLearnAgent(Agent):
         # Count the number of games we have played
         self.episodesSoFar = 0
         self.qValues = {}
+        self.qValue = util.Counter()
         self.counts = {}
+        self.prevState = []
+        self.prevAction = []
+        self.qScore = 0
 
     # Accessor functions for the variable episodesSoFar controlling learning
     def incrementEpisodesSoFar(self):
@@ -113,6 +117,46 @@ class QLearnAgent(Agent):
 
     def getMaxAttempts(self) -> int:
         return self.maxAttempts
+    
+    def qLearn(self, state):
+        # Get the list of legal actions Pacman can take in the given state
+        availableActions = state.getLegalPacmanActions()
+
+        # If Pacman has taken less than half of the training episodes and STOP action is legal, remove it from availableActions
+        if self.getEpisodesSoFar() / self.getNumTraining() < 0.5 and Directions.STOP in availableActions:
+            availableActions.remove(Directions.STOP)
+        
+        # Initialize a counter to hold the Q-value estimates for each available action
+        qValues = util.Counter()
+        
+        # For each available action, retrieve the Q-value estimate for the current state-action pair (state, action), or 0 if it doesn't exist yet
+        for action in availableActions:
+            qValues[action] = self.qValue.get((state, action), 0)
+
+        # If there is a previous action in the episode, check if it's safe to reverse the action and remove it from availableActions if not
+        if self.prevAction:
+            prevAction = self.prevAction[-1]
+            distanceX = state.getPacmanPosition()[0] - state.getGhostPosition(1)[0]
+            distanceY = state.getPacmanPosition()[1] - state.getGhostPosition(1)[1]
+            if math.sqrt(distanceX ** 2 + distanceY ** 2) > 2 and Directions.REVERSE[prevAction] in availableActions and len(availableActions) > 1:
+                availableActions.remove(Directions.REVERSE[prevAction])
+        
+        # Return the action with the highest Q-value estimate according to qValues
+        return qValues.argMax()
+
+    def qUpdate(self, state, action, reward, qMax):
+        # Retrieve the old Q-value for the state-action pair, or 0 if it does not exist yet
+        oldQ = self.qValue.get((state, action), 0)
+        # Calculate the new Q-value based on the old Q-value, the reward, the learning rate (alpha), and the discount factor (gamma)
+        newQ = oldQ + self.alpha*(reward + self.gamma * qMax - oldQ)
+        # Update the Q-value for the state-action pair in the Q-value table
+        self.qValue[(state, action)] = newQ
+
+    def qMax(self, state):
+        # Get the list of Q-values for all possible legal actions
+        qList = [self.qValue[(state, action)] for action in state.getLegalPacmanActions()]
+        # Return the maximum Q-value or 0 if there are no legal actions
+        return max(qList, default=0)
 
     # WARNING: You will be tested on the functionality of this method
     # DO NOT change the function signature
@@ -144,11 +188,15 @@ class QLearnAgent(Agent):
         Returns:
             Q(state, action)
         """
+        # Convert the game state to a tuple
         stateTuple = (state.pacmanPos, tuple(state.ghostPositions), tuple(state.food))
+        # Check if the state has not been visited before
         if stateTuple not in self.qValues:
             return 0.0
+        # Check if the action has not been taken in the state before
         if action not in self.qValues[stateTuple]:
             return 0.0
+        # Return the Q-value for the given state and action
         return self.qValues[stateTuple][action]
         # util.raiseNotDefined()
 
@@ -162,12 +210,23 @@ class QLearnAgent(Agent):
         Returns:
             q_value: the maximum estimated Q-value attainable from the state
         """
+        # Get the list of legal actions
         legal = state.getLegalPacmanActions()
+
+        # If stopping is a legal action, remove it from the list of legal actions
         if Directions.STOP in legal:
             legal.remove(Directions.STOP)
+
+        # Create a tuple representing the current state of the game
         stateTuple = (state.pacmanPos, tuple(state.ghostPositions), tuple(state.food))
+
+        # If the state has not been previously encountered, return a default value of 0.0
         if stateTuple not in self.qValues:
             return 0.0
+
+        # Return the maximum Q-value for the legal actions in the current state
+        # by iterating over each action in legal and getting its Q-value from self.qValues
+        # and taking the max of the Q-values
         return max([self.qValues[stateTuple][action] for action in legal])
         # util.raiseNotDefined()
 
@@ -187,10 +246,15 @@ class QLearnAgent(Agent):
             nextState: the resulting state
             reward: the reward received on this trajectory
         """
+        # Get the Q-value of the current state-action pair
         oldQValue = self.getQValue(state, action)
+        # Compute the sample using the reward and the maximum Q-value of the next state
         sample = reward + self.gamma * self.maxQValue(nextState)
+        # Compute the new Q-value using the learning rate and the old and new samples
         newQValue = (1 - self.alpha) * oldQValue + self.alpha * sample
+        # Update the Q-value of the current state-action pair in the Q-value dictionary
         self.qValues[(state, action)] = newQValue
+        # Update the state-action pair count for the current state
         self.updateCount(state, action)
         # util.raiseNotDefined()
 
@@ -278,15 +342,36 @@ class QLearnAgent(Agent):
         # print(state.getFood())
         # print("Score: ", state.getScore())
 
-        stateFeatures = GameStateFeatures(state)
+        # Calculate the difference between the current score and the previous score in qScore
+        scoreDiff = state.getScore() - self.qScore
 
-        if util.flipCoin(self.epsilon):
-            return random.choice(legal)
+        # If there is a previous state, retrieve it along with the previous action taken and update the Q-values using qUpdate()
+        if len(self.prevState) != 0:
+            prevState, prevAction = self.prevState[-1], self.prevAction[-1]
+            maxQScore = self.qMax(state)
+            self.qUpdate(prevState, prevAction, scoreDiff, maxQScore)
+
+        # Retrieve the legal actions available in the current state
+        legal = state.getLegalPacmanActions()
+
+        # Determine whether to explore or exploit by generating a random number and comparing it with the exploration rate
+        if random.random() > self.epsilon:
+            # If it is time to exploit, determine the best action to take using qLearn()
+            move = self.qLearn(state)
         else:
-            qValues = [self.getQValue(stateFeatures, action) for action in legal]
-            maxQValue = max(qValues)
-            bestActions = [action for action, qValue in zip(legal, qValues) if qValue == maxQValue]
-            return random.choice(bestActions)
+            # If it is time to explore, randomly select an action from the legal actions available
+            move = random.choice(legal)
+
+        # Record the current action and state in the respective lists for future use
+        self.prevAction.append(move)
+        self.prevState.append(state)
+
+        # Update the current score in qScore
+        self.qScore = state.getScore()
+
+        # Return the selected action
+        return move
+
 
     def final(self, state: GameState):
         """
@@ -303,9 +388,31 @@ class QLearnAgent(Agent):
         # of training episodes
         self.incrementEpisodesSoFar()
 
+        # Extract features from state
         stateFeatures = GameStateFeatures(state)
+        # Update the state feature count
         self.updateCount(stateFeatures, None)
         
+        # Calculate the reward of current state
+        stateReward = state.getScore() - self.qScore
+        if len(self.prevState) > 0:
+            # Get the previous state and action
+            prevState, prevAction = self.prevState[-1], self.prevAction[-1]
+            # Update the Q-values based on the previous state, action and stateReward
+            self.qUpdate(prevState, prevAction, stateReward, 0)
+
+        # Reset the qScore and previous states and actions
+        self.qScore = 0
+        self.prevState.clear()
+        self.prevAction.clear()
+
+        # Decrease the exploration rate epsilon linearly over the training episodes
+        totalEps = self.getEpisodesSoFar()
+        numTraining = self.getNumTraining()
+        if totalEps > 0 and totalEps <= numTraining:
+            episode = 1 - totalEps / numTraining
+            self.setEpsilon(episode * 0.1)
+
         if self.getEpisodesSoFar() == self.getNumTraining():
             msg = 'Training Done (turning off epsilon and alpha)'
             print('%s\n%s' % (msg, '-' * len(msg)))
