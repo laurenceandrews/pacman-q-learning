@@ -63,19 +63,6 @@ from pacman_utils.util import nearestPoint
 ###################################################
 
 class GameState:
-    """
-    A GameState specifies the full game state, including the food, capsules,
-    agent configurations and score changes.
-
-    GameStates are used by the Game object to capture the actual state of the game and
-    can be used by agents to reason about the game.
-
-    Much of the information in a GameState is stored in a GameStateData object.  We
-    strongly suggest that you access that data via the accessor methods below rather
-    than referring to the GameStateData object directly.
-
-    Note that in classic Pacman, Pacman is always agent 0.
-    """
 
     ####################################################
     # Accessor methods: use these to access state data #
@@ -627,23 +614,7 @@ def loadAgent(pacman: str,
               no_graphics: bool = True,
               base_dir: Union[str, Path] = '',
               searched: list = None):
-    """
-    Recursively searches through a directory (and the system path) to find
-    a *Agents.py file housing a Pacman agent class of a given name.
 
-    Args:
-        pacman: Name of Pacman agent class to load.
-        no_graphics: If false the keyboard agent cannot be loaded.
-        base_dir: Starting directory for the search.
-        searched: Directories already searched (to avoid a recursive loop)
-
-    Returns:
-        The class for the given Pacman agent name
-
-    Raises:
-        ValueError: Attempted to load KeyboardAgent with no graphics
-        AgentNotFoundException: No agent of the given name can be found
-    """
     searched = searched or []
 
     if no_graphics and pacman == 'KeyboardAgent':
